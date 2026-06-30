@@ -1,6 +1,7 @@
 #ifndef _FLEX_GROUP_BARRIER_H_
 #define _FLEX_GROUP_BARRIER_H_
 
+#include <stdbool.h>
 #include "flex_runtime.h"
 #include "flex_cluster_arch.h"
 
@@ -166,17 +167,33 @@ void grid_sync_group_barrier_xy_polling(GridSyncGroupInfo * info){
 *  Arbitrary Group Synchronization functions  *
 **********************************************/
 
-/// Encodes a group 
+/// Encoding of an arbitrary group of clusters
 typedef struct {
     int cluster_count;
     uint32_t clusters[];
-} GroupMemberEncoding;
+} GroupEncoding;
 
-int flex_group_cluster_count(const GroupMemberEncoding * group_encoding) {
+
+/**
+ * @brief Get the number of clusters in a group
+ * 
+ * @param group_encoding Encoding of the group
+ * 
+ * @returns Number of clusters in the group
+ */
+int flex_group_cluster_count(const GroupEncoding * group_encoding) {
     return group_encoding ? group_encoding->cluster_count : 0;
 }
 
-bool flex_group_contains_me(const GroupMemberEncoding * group_encoding) {
+
+/**
+ * @brief Check if the caller is in a group
+ * 
+ * @param group_encoding Encoding of the group
+ * 
+ * @returns True if the encoding is valid and contains the calling cluster
+ */
+bool flex_group_contains_me(const GroupEncoding * group_encoding) {
     if (group_encoding == NULL) return false;
     uint32_t me = flex_get_cluster_id();
     for (int i = 0; i < flex_group_cluster_count(group_encoding); ++i) {
@@ -185,17 +202,31 @@ bool flex_group_contains_me(const GroupMemberEncoding * group_encoding) {
     return false;
 }
 
+
+/// A barrier for an arbitrary group of clusters
 typedef struct {
     volatile uint32_t * counter;
     volatile uint32_t * iter;
-    const GroupMemberEncoding * group_encoding;
-} BarrierGroup;
+    const GroupEncoding * group_encoding;
+    const bool contains_me;                     // Needs to be recomputed if `group_encoding` changes => thats why `group_encoding` is const *.
+    const bool cluster_count;                   // Needs to be recomputed if `group_encoding` changes => thats why `group_encoding` is const *.
+} GroupBarrier;
 
-BarrierGroup flex_group_barrier_init(const GroupMemberEncoding * group_encoding) {
-    BarrierGroup barrier = {
+
+/**
+ * @brief Initialize a barrier with the given group
+ * 
+ * @param group_encoding Encoding of the group
+ * 
+ * @returns A group barrier for the given encoding
+ */
+GroupBarrier flex_group_barrier_init(const GroupEncoding * group_encoding) {
+    GroupBarrier barrier = {
         .counter = (volatile uint32_t *) (ARCH_SYNC_BASE + 40),
         .iter = (volatile uint32_t *) (ARCH_SYNC_BASE + 44),
         .group_encoding = group_encoding,
+        .contains_me = flex_group_contains_me(group_encoding),
+        .cluster_count = flex_group_cluster_count(group_encoding),
     };
 
 	if (flex_get_core_id() == 0) {
@@ -206,15 +237,22 @@ BarrierGroup flex_group_barrier_init(const GroupMemberEncoding * group_encoding)
     return barrier;
 }
 
-void flex_group_barrier_polling(const BarrierGroup * barrier) {
+
+/**
+ * @brief Wait for a group barrier.
+ *        Returns only after all clusters of the group reached this statement.
+ * 
+ * @param barrier Group barrier instance
+ */
+void flex_group_barrier_polling(const GroupBarrier * barrier) {
     if (barrier == NULL || barrier->counter == NULL || barrier->iter == NULL) return;
 
     flex_intra_cluster_sync();
 
-    if (flex_is_dm_core() && flex_group_contains_me(barrier->group_encoding)) {
+    if (flex_is_dm_core() && barrier->contains_me) {
         flex_annotate_barrier(0);
         uint32_t prev = *barrier->iter;
-        if ((flex_group_cluster_count(barrier->group_encoding) - flex_get_enable_value()) == flex_amo_fetch_add(barrier->counter)) {
+        if ((barrier->cluster_count - flex_get_enable_value()) == flex_amo_fetch_add(barrier->counter)) {
             flex_reset_barrier(barrier->counter);
             flex_amo_fetch_add(barrier->iter);
         } else {

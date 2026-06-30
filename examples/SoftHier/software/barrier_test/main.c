@@ -44,11 +44,11 @@ static int xy_barrier(int iter) {
 }
 
 static int group_barrier_polling(int iter) {
-    static GroupMemberEncoding group_encoding = {
+    static GroupEncoding group_encoding = {
         .cluster_count = 4,
         .clusters = {0, 2, 5, 9}
     };
-    BarrierGroup group_barrier = flex_group_barrier_init(&group_encoding);
+    GroupBarrier group_barrier = flex_group_barrier_init(&group_encoding);
 
     for (volatile int i = 0; i < iter; ++i) flex_group_barrier_polling(&group_barrier);
     return 0;
