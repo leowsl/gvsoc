@@ -161,4 +161,69 @@ void grid_sync_group_barrier_xy_polling(GridSyncGroupInfo * info){
     flex_intra_cluster_sync();
 }
 
+
+/**********************************************
+*  Arbitrary Group Synchronization functions  *
+**********************************************/
+
+/// Encodes a group 
+typedef struct {
+    int cluster_count;
+    uint32_t clusters[];
+} GroupMemberEncoding;
+
+int flex_group_cluster_count(const GroupMemberEncoding * group_encoding) {
+    return group_encoding ? group_encoding->cluster_count : 0;
+}
+
+bool flex_group_contains_me(const GroupMemberEncoding * group_encoding) {
+    if (group_encoding == NULL) return false;
+    uint32_t me = flex_get_cluster_id();
+    for (int i = 0; i < flex_group_cluster_count(group_encoding); ++i) {
+        if (group_encoding->clusters[i] == me) return true;
+    }
+    return false;
+}
+
+typedef struct {
+    volatile uint32_t * counter;
+    volatile uint32_t * iter;
+    const GroupMemberEncoding * group_encoding;
+} BarrierGroup;
+
+BarrierGroup flex_group_barrier_init(const GroupMemberEncoding * group_encoding) {
+    BarrierGroup barrier = {
+        .counter = (volatile uint32_t *) (ARCH_SYNC_BASE + 40),
+        .iter = (volatile uint32_t *) (ARCH_SYNC_BASE + 44),
+        .group_encoding = group_encoding,
+    };
+
+	if (flex_get_core_id() == 0) {
+        flex_reset_barrier(barrier.counter);
+    }
+    flex_global_barrier();
+
+    return barrier;
+}
+
+void flex_group_barrier_polling(const BarrierGroup * barrier) {
+    if (barrier == NULL || barrier->counter == NULL || barrier->iter == NULL) return;
+
+    flex_intra_cluster_sync();
+
+    if (flex_is_dm_core() && flex_group_contains_me(barrier->group_encoding)) {
+        flex_annotate_barrier(0);
+        uint32_t prev = *barrier->iter;
+        if ((flex_group_cluster_count(barrier->group_encoding) - flex_get_enable_value()) == flex_amo_fetch_add(barrier->counter)) {
+            flex_reset_barrier(barrier->counter);
+            flex_amo_fetch_add(barrier->iter);
+        } else {
+            while((*barrier->iter) == prev);
+        }
+        flex_annotate_barrier(0);
+    }
+    
+    flex_intra_cluster_sync();
+}
+
 #endif

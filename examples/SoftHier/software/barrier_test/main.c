@@ -1,7 +1,8 @@
 #include "flex_runtime.h"
+#include "flex_group_barrier.h"
 
 /// Test Timeout in nanoseconds
-#define TIMEOUT 1000000
+#define TIMEOUT 10000000
 
 /// Evaluates to true on exactly one core of the system
 #define FIXED_CORE (flex_is_first_core() && (flex_get_cluster_id() == 0))
@@ -42,6 +43,17 @@ static int xy_barrier(int iter) {
     return 0;
 }
 
+static int group_barrier_polling(int iter) {
+    static GroupMemberEncoding group_encoding = {
+        .cluster_count = 4,
+        .clusters = {0, 2, 5, 9}
+    };
+    BarrierGroup group_barrier = flex_group_barrier_init(&group_encoding);
+
+    for (volatile int i = 0; i < iter; ++i) flex_group_barrier_polling(&group_barrier);
+    return 0;
+}
+
 int main()
 {
     uint32_t eoc_val = 0;
@@ -58,6 +70,11 @@ int main()
     run_test(xy_barrier, 10);
     run_test(xy_barrier, 100);
     run_test(xy_barrier, 1000);
+
+    // group barrier tests
+    run_test(group_barrier_polling, 10);
+    run_test(group_barrier_polling, 100);
+    run_test(group_barrier_polling, 1000);
 
     flex_eoc(eoc_val);
     return 0;
