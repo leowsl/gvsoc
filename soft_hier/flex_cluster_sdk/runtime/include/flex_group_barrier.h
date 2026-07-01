@@ -209,7 +209,7 @@ typedef struct {
     volatile uint32_t * iter;
     const GroupEncoding * group_encoding;
     const bool contains_me;                     // Needs to be recomputed if `group_encoding` changes => thats why `group_encoding` is const *.
-    const bool cluster_count;                   // Needs to be recomputed if `group_encoding` changes => thats why `group_encoding` is const *.
+    const int cluster_count;                    // Needs to be recomputed if `group_encoding` changes => thats why `group_encoding` is const *.
 } GroupBarrier;
 
 
@@ -228,9 +228,10 @@ GroupBarrier flex_group_barrier_init(const GroupEncoding * group_encoding) {
         .contains_me = flex_group_contains_me(group_encoding),
         .cluster_count = flex_group_cluster_count(group_encoding),
     };
-
-	if (flex_get_core_id() == 0) {
+    
+	if (flex_get_core_id() == 0 && flex_get_cluster_id() == 0) {
         flex_reset_barrier(barrier.counter);
+        flex_reset_barrier(barrier.iter);
     }
     flex_global_barrier();
 
