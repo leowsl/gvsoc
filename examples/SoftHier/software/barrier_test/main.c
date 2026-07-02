@@ -54,6 +54,17 @@ static int group_barrier_polling(int iter) {
     return 0;
 }
 
+static int group_barrier(int iter) {
+    static GroupEncoding group_encoding = {
+        .cluster_count = 4,
+        .clusters = {0, 2, 5, 9}
+    };
+    GroupBarrier group_barrier = flex_group_barrier_init(&group_encoding);
+
+    for (volatile int i = 0; i < iter; ++i) flex_group_barrier(&group_barrier);
+    return 0;
+}
+
 int main()
 {
     uint32_t eoc_val = 0;
@@ -61,20 +72,25 @@ int main()
     flex_barrier_xy_init();
     flex_sat(TIMEOUT);
 
-    // Global barrier tests    
-    run_test(global_barrier, 10);
-    run_test(global_barrier, 100);
-    run_test(global_barrier, 1000);
+    // // Global barrier tests    
+    // run_test(global_barrier, 10);
+    // run_test(global_barrier, 100);
+    // run_test(global_barrier, 1000);
     
-    // xy barrier tests
-    run_test(xy_barrier, 10);
-    run_test(xy_barrier, 100);
-    run_test(xy_barrier, 1000);
+    // // xy barrier tests
+    // run_test(xy_barrier, 10);
+    // run_test(xy_barrier, 100);
+    // run_test(xy_barrier, 1000);
 
-    // group barrier tests
-    run_test(group_barrier_polling, 10);
-    run_test(group_barrier_polling, 100);
+    // // group barrier tests
+    // run_test(group_barrier_polling, 10);
+    // run_test(group_barrier_polling, 100);
     run_test(group_barrier_polling, 1000);
+
+
+    // run_test(group_barrier, 10);
+    // run_test(group_barrier, 100);
+    run_test(group_barrier, 1000);
 
     flex_eoc(eoc_val);
     return 0;

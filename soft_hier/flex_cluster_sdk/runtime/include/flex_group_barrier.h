@@ -265,4 +265,42 @@ void flex_group_barrier_polling(const GroupBarrier * barrier) {
     flex_intra_cluster_sync();
 }
 
+
+void flex_wakeup_group(const GroupEncoding * group_encoding) {
+    int cluster_count = flex_group_cluster_count(group_encoding);
+    for (int i = 0; i < cluster_count; i++) {
+        uint32_t cluster_id = group_encoding->clusters[i];
+        FlexPosition pos = get_pos(cluster_id);
+
+        uint8_t row_mask = ~(1 << pos.y);
+        uint8_t col_mask = ~(1 << pos.x);
+
+        flex_wakeup_clusters(row_mask, col_mask);
+    }
+}
+
+
+void flex_group_barrier(const GroupBarrier * barrier) {
+    if (barrier == NULL || barrier->counter == NULL || barrier->iter == NULL) return;
+
+    flex_intra_cluster_sync();
+    
+    if (flex_is_dm_core() && barrier->contains_me) {
+        flex_annotate_barrier(0);
+
+        volatile uint32_t * cluster_wfi_reg = (volatile uint32_t *) ARCH_CLUSTER_REG_BASE;
+
+        if ((barrier->cluster_count - flex_get_enable_value()) == flex_amo_fetch_add(barrier->counter)) {
+            flex_reset_barrier(barrier->counter);
+            flex_wakeup_group(barrier->group_encoding);
+        }
+        *cluster_wfi_reg = flex_get_enable_value();
+        
+        flex_annotate_barrier(0);
+    }
+
+    flex_intra_cluster_sync();
+
+}
+
 #endif
