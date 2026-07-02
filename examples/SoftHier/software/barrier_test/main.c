@@ -44,13 +44,49 @@ static int xy_barrier(int iter) {
 }
 
 static int group_barrier_polling(int iter) {
-    static GroupEncoding group_encoding = {
-        .cluster_count = 4,
-        .clusters = {0, 2, 5, 9}
+    static flex_group_encoding group_encoding = {
+        .id = 0,
+        .cluster_count = 6,
+        .clusters = {0, 2, 5, 9, 14, 15}
     };
-    GroupBarrier group_barrier = flex_group_barrier_init(&group_encoding);
+    flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
+
+    // Restart the timer
+    if (FIXED_CORE) flex_timer_start(); 
 
     for (volatile int i = 0; i < iter; ++i) flex_group_barrier_polling(&group_barrier);
+    return 0;
+}
+
+static int multi_group_barrier_polling(int iter) {
+    static flex_group_encoding group_encoding_1 = {
+        .id = 1,
+        .cluster_count = 6,
+        .clusters = {1, 3, 5, 7, 9, 11}
+    };
+    static flex_group_encoding group_encoding_2 = {
+        .id = 2,
+        .cluster_count = 6,
+        .clusters = {0, 2, 4, 6, 8, 10}
+    };
+    static flex_group_encoding group_encoding_3 = {
+        .id = 3,
+        .cluster_count = 4,
+        .clusters = {12, 13, 14, 15}
+    };
+
+    flex_group_barrier group_barrier_1 = flex_group_barrier_init(&group_encoding_1);
+    flex_group_barrier group_barrier_2 = flex_group_barrier_init(&group_encoding_2);
+    flex_group_barrier group_barrier_3 = flex_group_barrier_init(&group_encoding_3);
+
+    // Restart the timer
+    if (FIXED_CORE) flex_timer_start(); 
+
+    for (volatile int i = 0; i < iter; ++i) {
+        flex_group_barrier_polling(&group_barrier_1);
+        flex_group_barrier_polling(&group_barrier_2);
+        flex_group_barrier_polling(&group_barrier_3);
+    }
     return 0;
 }
 
@@ -75,6 +111,10 @@ int main()
     run_test(group_barrier_polling, 10);
     run_test(group_barrier_polling, 100);
     run_test(group_barrier_polling, 1000);
+
+    run_test(multi_group_barrier_polling, 10);
+    run_test(multi_group_barrier_polling, 100);
+    run_test(multi_group_barrier_polling, 1000);
 
     flex_eoc(eoc_val);
     return 0;
