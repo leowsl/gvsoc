@@ -168,20 +168,13 @@ void grid_sync_group_barrier_xy_polling(GridSyncGroupInfo * info){
 **********************************************/
 
 #define FLEX_GROUP_SYNC_COUNTER_REG   40      /// Offset for the counter register in the ARCH_SYNC region.
-#define FLEX_GROUP_SYNC_ITER_REG      44      /// Offset for the iterator register in the ARCH_SYNC region.
-
+#define FLEX_GROUP_SYNC_PARITY_BIT    31      /// Parity bit inside the counter that gets flipped when the counter wraps around
+#define FLEX_GROUP_SYNC_PARITY_MASK   (1 << FLEX_GROUP_SYNC_PARITY_BIT)
+#define FLEX_GROUP_SYNC_COUNTER_MASK ~FLEX_GROUP_SYNC_PARITY_MASK
 
 /// Unique identifier for a group of clusters.
 /// Negative ids are invalid.
 typedef int flex_group_id;
-
-
-/// Register addresses for a group barrier
-typedef struct  {
-    volatile uint32_t * counter;
-    volatile uint32_t * iterator;
-} flex_group_registers;
-
 
 /// Encoding of an arbitrary group of clusters
 typedef struct {
@@ -193,7 +186,7 @@ typedef struct {
 
 /// A barrier for an arbitrary group of clusters
 typedef struct {
-    flex_group_registers registers;
+    volatile uint32_t * sync_register;
     bool contains_me;
     size_t cluster_count;
 } flex_group_barrier;
@@ -217,25 +210,19 @@ bool flex_group_contains_me(const flex_group_encoding * group_encoding) {
 
 
 /**
- * @brief Get the register addresses for a group
+ * @brief Get the counter register address for a group
  * 
  * @param group_id identifier of the group
  * 
- * @returns Sync result with two registers: one for the counter and one for the iterator.
+ * @returns Pointer to the counter register of a gorup.
  *          Defaults to 0 if group_id is invalid.
  */
-flex_group_registers get_flex_group_registers(flex_group_id group_id) {
-    flex_group_registers r = {
-        .counter = NULL,
-        .iterator = NULL,
-    };
-    
-    if (group_id >= 0 && group_id <= ARCH_NUM_CLUSTER) {
-        void * addr = (void *) ARCH_SYNC_BASE + (ARCH_SYNC_INTERLEAVE + ARCH_SYNC_SPECIAL_MEM) * group_id;
-        r.counter = addr + FLEX_GROUP_SYNC_COUNTER_REG;
-        r.iterator = addr + FLEX_GROUP_SYNC_ITER_REG;
+void * get_flex_group_register(flex_group_id group_id) {    
+    if (group_id < 0 || group_id > ARCH_NUM_CLUSTER) {
+        return NULL;
     }
-    return r;
+    void * cluster_addr = ((void *) ARCH_SYNC_BASE) + (ARCH_SYNC_INTERLEAVE + ARCH_SYNC_SPECIAL_MEM) * group_id;
+    return cluster_addr + FLEX_GROUP_SYNC_COUNTER_REG;
 }
 
 
@@ -248,14 +235,13 @@ flex_group_registers get_flex_group_registers(flex_group_id group_id) {
  */
 flex_group_barrier flex_group_barrier_init(const flex_group_encoding * group_encoding) {
     flex_group_barrier barrier = {
-        .registers = get_flex_group_registers(group_encoding->id),
+        .sync_register = (volatile uint32_t *)get_flex_group_register(group_encoding->id),
         .contains_me = flex_group_contains_me(group_encoding),
         .cluster_count = group_encoding->cluster_count,
     };
     
 	if (flex_get_core_id() == 0 && flex_get_cluster_id() == 0) {
-        flex_reset_barrier(barrier.registers.counter);
-        flex_reset_barrier(barrier.registers.iterator);
+        flex_reset_barrier(barrier.sync_register);
     }
     flex_global_barrier();
 
@@ -276,16 +262,18 @@ void flex_group_barrier_polling(const flex_group_barrier * barrier) {
 
     if (flex_is_dm_core() && barrier->contains_me) {
         flex_annotate_barrier(0);
-        uint32_t prev = *barrier->registers.iterator;
-        if ((barrier->cluster_count - flex_get_enable_value()) == flex_amo_fetch_add(barrier->registers.counter)) {
-            flex_reset_barrier(barrier->registers.counter);
-            flex_amo_fetch_add(barrier->registers.iterator);
+        uint32_t counter = flex_amo_fetch_add(barrier->sync_register);
+        uint32_t val     = counter & FLEX_GROUP_SYNC_COUNTER_MASK;
+        uint32_t parity  = counter & FLEX_GROUP_SYNC_PARITY_MASK;
+
+        if (val == (barrier->cluster_count - flex_get_enable_value())) {
+            *(barrier->sync_register) = parity ^ FLEX_GROUP_SYNC_PARITY_MASK;
         } else {
-            while((*barrier->registers.iterator) == prev);
+            while((*(barrier->sync_register) & FLEX_GROUP_SYNC_PARITY_MASK) == parity);
         }
         flex_annotate_barrier(0);
     }
-    
+
     flex_intra_cluster_sync();
 }
 
