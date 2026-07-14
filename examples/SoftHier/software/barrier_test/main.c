@@ -44,11 +44,9 @@ static int xy_barrier(int iter) {
 }
 
 static int group_barrier_polling(int iter) {
-    static flex_group_encoding group_encoding = {
-        .id = 0,
-        .cluster_count = 6,
-        .clusters = {0, 2, 5, 9, 14, 15}
-    };
+    uint32_t group_config[] = {0, 2, 5, 9, 14, 15};
+    size_t group_config_size = sizeof(group_config) / sizeof(group_config[0]);
+    flex_group_encoding group_encoding = flex_group_create_from_array(group_config, group_config_size);
     flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
 
     // Restart the timer
@@ -59,21 +57,15 @@ static int group_barrier_polling(int iter) {
 }
 
 static int multi_group_barrier_polling(int iter) {
-    static flex_group_encoding group_encoding_1 = {
-        .id = 1,
-        .cluster_count = 6,
-        .clusters = {1, 3, 5, 7, 9, 11}
-    };
-    static flex_group_encoding group_encoding_2 = {
-        .id = 2,
-        .cluster_count = 6,
-        .clusters = {0, 2, 4, 6, 8, 10}
-    };
-    static flex_group_encoding group_encoding_3 = {
-        .id = 3,
-        .cluster_count = 4,
-        .clusters = {12, 13, 14, 15}
-    };
+    uint32_t group_config_1[] = {1, 3, 5, 7, 9, 11};
+    uint32_t group_config_2[] = {0, 2, 4, 6, 8, 10};
+    uint32_t group_config_3[] = {12, 13, 14, 15};
+    size_t group_config_size_1 = sizeof(group_config_1) / sizeof(group_config_1[0]);
+    size_t group_config_size_2 = sizeof(group_config_2) / sizeof(group_config_2[0]);
+    size_t group_config_size_3 = sizeof(group_config_3) / sizeof(group_config_3[0]);
+    flex_group_encoding group_encoding_1 = flex_group_create_from_array(group_config_1, group_config_size_1);
+    flex_group_encoding group_encoding_2 = flex_group_create_from_array(group_config_2, group_config_size_2);
+    flex_group_encoding group_encoding_3 = flex_group_create_from_array(group_config_3, group_config_size_3);
 
     flex_group_barrier group_barrier_1 = flex_group_barrier_init(&group_encoding_1);
     flex_group_barrier group_barrier_2 = flex_group_barrier_init(&group_encoding_2);

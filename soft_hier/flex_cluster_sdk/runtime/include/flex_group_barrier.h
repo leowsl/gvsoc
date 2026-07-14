@@ -171,16 +171,14 @@ void grid_sync_group_barrier_xy_polling(GridSyncGroupInfo * info){
 #define FLEX_GROUP_SYNC_PARITY_BIT    31      /// Parity bit inside the counter that gets flipped when the counter wraps around
 #define FLEX_GROUP_SYNC_PARITY_MASK   (1 << FLEX_GROUP_SYNC_PARITY_BIT)
 #define FLEX_GROUP_SYNC_COUNTER_MASK ~FLEX_GROUP_SYNC_PARITY_MASK
+#define FLEX_GROUP_CLUSTER_WORDS      ((ARCH_NUM_CLUSTER + 31) / 32)    /// Number of words to represent all clusters as bits
+#define FLEX_GROUP_SLOTS_PER_CLUSTER  1     /// Number of counter slots per cluster (1 = single counter per cluster, can be 10 or more)
+#define FLEX_GROUP_NUM_GROUP_SLOTS    (ARCH_NUM_CLUSTER * FLEX_GROUP_SLOTS_PER_CLUSTER)     /// Total Number of available counter slots
 
-/// Unique identifier for a group of clusters.
-/// Negative ids are invalid.
-typedef int flex_group_id;
 
 /// Encoding of an arbitrary group of clusters
 typedef struct {
-    flex_group_id id;
-    size_t cluster_count;
-    uint32_t clusters[];
+    uint32_t mask[FLEX_GROUP_CLUSTER_WORDS]
 } flex_group_encoding;
 
 
@@ -192,39 +190,70 @@ typedef struct {
 } flex_group_barrier;
 
 
-/**
- * @brief Check if the caller is in a group
- * 
- * @param group_encoding Encoding of the group
- * 
- * @returns True if the encoding is valid and contains the calling cluster
- */
-bool flex_group_contains_me(const flex_group_encoding * group_encoding) {
-    if (group_encoding == NULL || group_encoding->id < 0) return false;
-    uint32_t me = flex_get_cluster_id();
-    for (int i = 0; i < group_encoding->cluster_count; ++i) {
-        if (group_encoding->clusters[i] == me) return true;
-    }
-    return false;
-}
-
-
-/**
- * @brief Get the counter register address for a group
- * 
- * @param group_id identifier of the group
- * 
- * @returns Pointer to the counter register of a gorup.
- *          Defaults to 0 if group_id is invalid.
- */
-void * get_flex_group_register(flex_group_id group_id) {    
-    if (group_id < 0 || group_id > ARCH_NUM_CLUSTER) {
+void * get_flex_group_register(uint32_t cid) {    
+    if (cid < 0 || cid > ARCH_NUM_CLUSTER) {
         return NULL;
     }
-    void * cluster_addr = ((void *) ARCH_SYNC_BASE) + (ARCH_SYNC_INTERLEAVE + ARCH_SYNC_SPECIAL_MEM) * group_id;
+    void * cluster_addr = ((void *) ARCH_SYNC_BASE) + (ARCH_SYNC_INTERLEAVE + ARCH_SYNC_SPECIAL_MEM) * cid;
     return cluster_addr + FLEX_GROUP_SYNC_COUNTER_REG;
 }
 
+
+uint32_t get_flex_group_leader(const flex_group_encoding * group_encoding) {
+    for (int cid = 0; cid < ARCH_NUM_CLUSTER; cid++) {
+        int word = cid / 32;
+        int bit = cid % 32;
+        if ((group_encoding->mask[word] >> bit) == 0x1) return cid;
+    }
+    return 0xFFFFFFFF;
+}
+
+
+flex_group_encoding flex_group_create_zero_mask() {
+    flex_group_encoding group_encoding = { .mask = 0 };
+    return group_encoding;
+}
+
+
+void flex_group_set_cluster(flex_group_encoding * group_encoding, uint32_t cid) {
+    if (cid >= ARCH_NUM_CLUSTER) return;
+
+    int word = cid / 32;
+    int bit = cid % 32;
+    group_encoding->mask[word] |= (1u << (bit));
+}
+
+
+flex_group_encoding flex_group_create_from_array(uint32_t clusters[], size_t len) {
+    flex_group_encoding group_encoding = flex_group_create_zero_mask();
+
+    for (int i = 0; i < len; i++) {
+        flex_group_set_cluster(&group_encoding, clusters[i]);
+    }
+
+    return group_encoding;
+}
+
+
+bool flex_group_contains_me(const flex_group_encoding * group_encoding) {
+    uint32_t cid = flex_get_cluster_id();
+    int word = cid / 32;
+    int bit = cid % 32;
+    return (group_encoding->mask[word] >> bit) & 0x1;
+}
+
+
+uint32_t flex_group_get_cluster_cnt(const flex_group_encoding * group_encoding) {
+    uint32_t group_ctr = 0;
+
+    for (int cid = 0; cid < ARCH_NUM_CLUSTER; cid++) {
+        int word = cid / 32;
+        int bit = cid % 32;
+        group_ctr += ((group_encoding->mask[word] >> bit) == 0x1);
+    }
+
+    return group_ctr;
+}
 
 /**
  * @brief Initialize a barrier with the given group
@@ -235,9 +264,9 @@ void * get_flex_group_register(flex_group_id group_id) {
  */
 flex_group_barrier flex_group_barrier_init(const flex_group_encoding * group_encoding) {
     flex_group_barrier barrier = {
-        .sync_register = (volatile uint32_t *)get_flex_group_register(group_encoding->id),
+        .sync_register = get_flex_group_register(get_flex_group_leader(group_encoding)),
         .contains_me = flex_group_contains_me(group_encoding),
-        .cluster_count = group_encoding->cluster_count,
+        .cluster_count = flex_group_get_cluster_cnt(group_encoding),
     };
     
 	if (flex_get_core_id() == 0 && flex_get_cluster_id() == 0) {
@@ -276,5 +305,6 @@ void flex_group_barrier_polling(const flex_group_barrier * barrier) {
 
     flex_intra_cluster_sync();
 }
+
 
 #endif
