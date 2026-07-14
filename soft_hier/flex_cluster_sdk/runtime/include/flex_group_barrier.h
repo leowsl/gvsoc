@@ -191,7 +191,7 @@ typedef struct {
 
 
 void * get_flex_group_register(uint32_t cid) {    
-    if (cid < 0 || cid > ARCH_NUM_CLUSTER) {
+    if (cid < 0 || cid >= ARCH_NUM_CLUSTER) {
         return NULL;
     }
     void * cluster_addr = ((void *) ARCH_SYNC_BASE) + (ARCH_SYNC_INTERLEAVE + ARCH_SYNC_SPECIAL_MEM) * cid;
