@@ -249,7 +249,7 @@ uint32_t flex_group_get_cluster_cnt(const flex_group_encoding * group_encoding) 
     for (int cid = 0; cid < ARCH_NUM_CLUSTER; cid++) {
         int word = cid / 32;
         int bit = cid % 32;
-        group_ctr += ((group_encoding->mask[word] >> bit) == 0x1);
+        group_ctr += ((group_encoding->mask[word] >> bit) & 0x1);
     }
 
     return group_ctr;
