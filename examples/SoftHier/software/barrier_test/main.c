@@ -82,6 +82,20 @@ static int multi_group_barrier_polling(int iter) {
     return 0;
 }
 
+static int group_barrier_polling_new(int iter) {
+    uint32_t group_config[] = {0, 2, 5, 9, 14, 15};
+    size_t group_config_size = sizeof(group_config) / sizeof(group_config[0]);
+    flex_group_encoding group_encoding = flex_group_create_from_array(group_config, group_config_size);
+    flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
+
+    // Restart the timer
+    if (FIXED_CORE) flex_timer_start(); 
+
+    for (volatile int i = 0; i < iter; ++i) flex_group_barrier_wait(&group_barrier);
+    return 0;
+}
+
+
 int main()
 {
     uint32_t eoc_val = 0;
@@ -107,6 +121,10 @@ int main()
     run_test(multi_group_barrier_polling, 10);
     run_test(multi_group_barrier_polling, 100);
     run_test(multi_group_barrier_polling, 1000);
+
+    run_test(group_barrier_polling_new, 10);
+    run_test(group_barrier_polling_new, 100);
+    run_test(group_barrier_polling_new, 1000);
 
     flex_eoc(eoc_val);
     return 0;
