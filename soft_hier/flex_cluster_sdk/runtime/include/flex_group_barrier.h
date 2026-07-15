@@ -271,8 +271,15 @@ flex_group_barrier flex_group_barrier_init(const flex_group_encoding * group_enc
         .cluster_count = flex_group_get_cluster_cnt(group_encoding),
     };
     
+    // Reset all registers of the group
 	if (flex_get_core_id() == 0 && flex_get_cluster_id() == 0) {
-        flex_reset_barrier(barrier.sync_register);
+        for (int cid = 0; cid < ARCH_NUM_CLUSTER; cid++) {
+                int word = cid / 32;
+                int bit = cid % 32;
+                if((group_encoding->mask[word] >> bit) & 0x1) {
+                    flex_reset_barrier(get_flex_group_register(cid));
+                }
+            }
     }
     flex_global_barrier();
 
