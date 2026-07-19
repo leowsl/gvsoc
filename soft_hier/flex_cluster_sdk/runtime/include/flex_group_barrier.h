@@ -371,10 +371,10 @@ void flex_group_barrier_polling(const flex_group_barrier * barrier) {
 #define MAX_GROUP_SIZE (1U << DISSEMINATION_MAX_ROUNDS)
 
 #define DISSEMINATION_ROUND_MASK(round, parity) (1 << (round + DISSEMINATION_MAX_ROUNDS * parity))
+#define DISSEMINATION_RESET_MASK(parity) ~(0xFFFF << (DISSEMINATION_MAX_ROUNDS * parity))
 
 typedef struct {
     uint8_t parity;
-    bool sense;
     uint8_t n_rounds;
     volatile uint32_t * local_reg;
     volatile uint32_t * partner_reg[DISSEMINATION_MAX_ROUNDS];
@@ -384,22 +384,22 @@ bool dissemination_get_flag(volatile uint32_t * reg, uint8_t round, uint8_t pari
     return (*reg & DISSEMINATION_ROUND_MASK(round, parity)) != 0;
 }
 
-void dissemination_set_flag(volatile uint32_t * reg, uint8_t round, uint8_t parity, bool value) {
-    uint32_t mask = DISSEMINATION_ROUND_MASK(round, parity);
-    if (value)
-        flex_amo_or(reg, mask);
-    else
-        flex_amo_and(reg, ~mask);
+void dissemination_set_flag(volatile uint32_t * reg, uint8_t round, uint8_t parity) {
+    flex_amo_or(reg, DISSEMINATION_ROUND_MASK(round, parity));
+}
+
+void dissemination_reset_flags(volatile uint32_t * reg, uint8_t parity) {
+    flex_amo_and(reg, DISSEMINATION_RESET_MASK(parity));
 }
 
 dissemination_info_t dissemination_init(const flex_group_encoding * group_encoding) {
     dissemination_info_t d_info = {
         .parity = 0,
-        .sense = true,
         .n_rounds = 0,
         .local_reg = get_flex_group_register(flex_get_cluster_id()),
         .partner_reg = { NULL }
     };
+    if (!flex_group_contains_me(group_encoding)) return d_info;
 
     // Get a list of clusters in the group from the mask
     uint32_t group_size = flex_group_get_cluster_cnt(group_encoding);
@@ -439,12 +439,10 @@ void flex_group_dissemination_barrier(
         flex_annotate_barrier(0);
 
         for (uint8_t round = 0; round < d_info->n_rounds; round++) {
-            dissemination_set_flag(d_info->partner_reg[round], round, d_info->parity, d_info->sense);
-            while(dissemination_get_flag(d_info->local_reg, round, d_info->parity) != d_info->sense);
+            dissemination_set_flag(d_info->partner_reg[round], round, d_info->parity);
+            while(dissemination_get_flag(d_info->local_reg, round, d_info->parity) != 0x1);
         }
-        if (d_info->parity == 1) {
-            d_info->sense = !d_info->sense;
-        }
+        dissemination_reset_flags(d_info->local_reg, d_info->parity);
         d_info->parity ^= 0x1;
 
         flex_annotate_barrier(0);
