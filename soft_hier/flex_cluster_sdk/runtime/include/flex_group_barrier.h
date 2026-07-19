@@ -178,7 +178,7 @@ void grid_sync_group_barrier_xy_polling(GridSyncGroupInfo * info){
 
 /// Encoding of an arbitrary group of clusters
 typedef struct {
-    uint32_t mask[FLEX_GROUP_CLUSTER_WORDS]
+    uint32_t mask[FLEX_GROUP_CLUSTER_WORDS];
 } flex_group_encoding;
 
 
@@ -235,12 +235,15 @@ flex_group_encoding flex_group_create_from_array(uint32_t clusters[], size_t len
     return group_encoding;
 }
 
-
-bool flex_group_contains_me(const flex_group_encoding * group_encoding) {
-    uint32_t cid = flex_get_cluster_id();
+bool flex_group_contains_cluster(const flex_group_encoding * group_encoding, uint32_t cid) {
     int word = cid / 32;
     int bit = cid % 32;
     return (group_encoding->mask[word] >> bit) & 0x1;
+}
+
+
+bool flex_group_contains_me(const flex_group_encoding * group_encoding) {
+    return flex_group_contains_cluster(group_encoding, flex_get_cluster_id());
 }
 
 
@@ -271,15 +274,9 @@ flex_group_barrier flex_group_barrier_init(const flex_group_encoding * group_enc
         .cluster_count = flex_group_get_cluster_cnt(group_encoding),
     };
     
-    // Reset all registers of the group
-	if (flex_get_core_id() == 0 && flex_get_cluster_id() == 0) {
-        for (int cid = 0; cid < ARCH_NUM_CLUSTER; cid++) {
-                int word = cid / 32;
-                int bit = cid % 32;
-                if((group_encoding->mask[word] >> bit) & 0x1) {
-                    flex_reset_barrier(get_flex_group_register(cid));
-                }
-            }
+    // Every member resets their registers
+	if (barrier.contains_me && flex_get_core_id() == 0) {
+        flex_reset_barrier(get_flex_group_register(flex_get_cluster_id()));
     }
     flex_global_barrier();
 
