@@ -29,7 +29,7 @@
  * @returns exitcode, 0 if test passed
  */
 static int global_barrier(int iter) {
-    for (volatile int i = 0; i < iter; ++i) flex_global_barrier();
+    for (int i = 0; i < iter; ++i) flex_global_barrier();
     return 0;
 }
 
@@ -39,7 +39,7 @@ static int global_barrier(int iter) {
  * @returns exitcode, 0 if test passed
  */
 static int xy_barrier(int iter) {
-    for (volatile int i = 0; i < iter; ++i) flex_global_barrier_xy();
+    for (int i = 0; i < iter; ++i) flex_global_barrier_xy();
     return 0;
 }
 
@@ -50,9 +50,10 @@ static int group_barrier_polling(int iter) {
     flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
 
     // Restart the timer
+    flex_global_barrier();
     if (FIXED_CORE) flex_timer_start(); 
 
-    for (volatile int i = 0; i < iter; ++i) flex_group_barrier_polling(&group_barrier);
+    for (int i = 0; i < iter; ++i) flex_group_barrier_polling(&group_barrier);
     return 0;
 }
 
@@ -72,9 +73,10 @@ static int multi_group_barrier_polling(int iter) {
     flex_group_barrier group_barrier_3 = flex_group_barrier_init(&group_encoding_3);
 
     // Restart the timer
+    flex_global_barrier();
     if (FIXED_CORE) flex_timer_start(); 
 
-    for (volatile int i = 0; i < iter; ++i) {
+    for (int i = 0; i < iter; ++i) {
         flex_group_barrier_polling(&group_barrier_1);
         flex_group_barrier_polling(&group_barrier_2);
         flex_group_barrier_polling(&group_barrier_3);
@@ -89,9 +91,10 @@ static int group_barrier_polling_new(int iter) {
     flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
 
     // Restart the timer
+    flex_global_barrier();
     if (FIXED_CORE) flex_timer_start(); 
 
-    for (volatile int i = 0; i < iter; ++i) flex_group_barrier_wait(&group_barrier);
+    for (int i = 0; i < iter; ++i) flex_group_barrier_wait(&group_barrier);
     return 0;
 }
 
@@ -103,9 +106,10 @@ static int group_barrier_dissemination(int iter) {
     dissemination_info_t d_info = dissemination_init(&group_encoding);
 
     // Restart the timer
+    flex_global_barrier();
     if (FIXED_CORE) flex_timer_start();
 
-    for (volatile int i = 0; i < iter; ++i) flex_group_dissemination_barrier(&group_barrier, &d_info);
+    for (int i = 0; i < iter; ++i) flex_group_dissemination_barrier(&group_barrier, &d_info);
     return 0;
 }
 
@@ -118,28 +122,34 @@ int main()
     flex_sat(TIMEOUT);
 
     // Global barrier tests    
+    run_test(global_barrier, 0);
     run_test(global_barrier, 10);
     run_test(global_barrier, 100);
     run_test(global_barrier, 1000);
     
     // xy barrier tests
+    run_test(xy_barrier, 0);
     run_test(xy_barrier, 10);
     run_test(xy_barrier, 100);
     run_test(xy_barrier, 1000);
 
     // group barrier tests
+    run_test(group_barrier_polling, 0);
     run_test(group_barrier_polling, 10);
     run_test(group_barrier_polling, 100);
     run_test(group_barrier_polling, 1000);
 
+    run_test(multi_group_barrier_polling, 0);
     run_test(multi_group_barrier_polling, 10);
     run_test(multi_group_barrier_polling, 100);
     run_test(multi_group_barrier_polling, 1000);
 
+    run_test(group_barrier_polling_new, 0);
     run_test(group_barrier_polling_new, 10);
     run_test(group_barrier_polling_new, 100);
     run_test(group_barrier_polling_new, 1000);
 
+    run_test(group_barrier_dissemination, 0);
     run_test(group_barrier_dissemination, 10);
     run_test(group_barrier_dissemination, 100);
     run_test(group_barrier_dissemination, 1000);
