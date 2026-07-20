@@ -385,60 +385,10 @@ flex_group_tree_barrier flex_group_barrier_tree_init(const flex_group_encoding *
     return barrier;
 }
 
-
 /**
  * @brief Wait for a group barrier.
  *        Returns only after all clusters of the group reached this statement.
- *        In contrast to `flex_group_barrier_polling`, this function spins on the local register.
- *        When the last cluster arrives at the barrier, all local registers are notified.
- * 
- * @param barrier Group barrier instance
- * 
- * @returns This function only returns after all clusters in the group reached that barrier.
- */
-void flex_group_barrier_wait(const flex_group_barrier * barrier) {
-    flex_intra_cluster_sync();
-
-    if (flex_is_dm_core() && barrier->contains_me) {
-        flex_annotate_barrier(0);
-
-        // Store initial parity value & increment counter
-        volatile uint32_t * local_register = get_flex_group_register(flex_get_cluster_id());
-        uint32_t parity = *local_register & FLEX_GROUP_SYNC_PARITY_MASK;
-        uint32_t counter = flex_amo_fetch_add(barrier->sync_register) & FLEX_GROUP_SYNC_COUNTER_MASK;
-
-        // Counter is full, notify waiting clusters
-        if (counter == (barrier->cluster_count - flex_get_enable_value())) {
-            *(barrier->sync_register) = parity ^ FLEX_GROUP_SYNC_PARITY_MASK;
-
-            // Need to loop through full mask
-            for (int cid = 0; cid < ARCH_NUM_CLUSTER; cid++) {
-                int word = cid / 32;
-                int bit = cid % 32;
-                if((barrier->group_encoding->mask[word] >> bit) & 0x1) {
-                    volatile uint32_t * reg = get_flex_group_register(cid);
-                    if (reg != barrier->sync_register) {
-                        *reg = parity ^ FLEX_GROUP_SYNC_PARITY_MASK;
-                    }
-                }
-            }
-        }
-
-        // Counter is not full, wait for notification
-        else {
-            while((*local_register & FLEX_GROUP_SYNC_PARITY_MASK) == parity);
-        }
-        flex_annotate_barrier(0);
-    }
-
-    flex_intra_cluster_sync();
-}
-
-
-/**
- * @brief Wait for a group barrier.
- *        Returns only after all clusters of the group reached this statement.
- *        In contrast to `flex_group_barrier_wait`, this function spins on the (remote) counter register.
+ *        This function spins on the (remote) counter register.
  * 
  * @param barrier Group barrier instance
  * 

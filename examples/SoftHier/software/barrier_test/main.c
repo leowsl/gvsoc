@@ -104,27 +104,6 @@ static int group_barrier_polling(struct test_config config) {
 }
 
 
-static int group_barrier_polling_new(struct test_config config) {
-    // Initialize barriers
-    flex_group_barrier barriers[config.n_groups];
-    for (unsigned i = 0; i < config.n_groups; i++) {
-        barriers[i] = flex_group_barrier_init(&config.groups[i]);
-    }
-
-    // Restart the timer
-    flex_global_barrier();
-    if (FIXED_CORE) flex_timer_start();
-
-    for (int i = 0; i < config.iterations; ++i) {
-        for (int n = 0; n < config.n_groups; ++n) {
-            flex_group_barrier_wait(&barriers[n]);
-        }
-    }
-
-    return 0;
-}
-
-
 static int group_barrier_dissemination(struct test_config config) {
     // Initialize barriers
     flex_group_barrier barriers[config.n_groups];
@@ -189,7 +168,6 @@ int main()
     run_test(global_barrier, config);
     run_test(xy_barrier, config);
     run_test(group_barrier_polling, config);
-    run_test(group_barrier_polling_new, config);
     run_test(group_barrier_dissemination, config);
     run_test(group_barrier_tree, config);
 
