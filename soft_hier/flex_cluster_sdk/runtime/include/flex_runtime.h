@@ -193,6 +193,16 @@ uint32_t flex_amo_fetch_add(uint32_t* barrier){
     return __atomic_fetch_add(barrier, flex_get_enable_value(), __ATOMIC_RELAXED);
 }
 
+/// Atomic operation: `*reg |= value`
+uint32_t flex_amo_or(volatile uint32_t *reg, uint32_t value) {
+    return __atomic_fetch_or((uint32_t *)reg, value, __ATOMIC_RELAXED);
+}
+
+/// Atomic operation: `*reg &= value`
+uint32_t flex_amo_and(volatile uint32_t *reg, uint32_t value) {
+    return __atomic_fetch_and((uint32_t *)reg, value, __ATOMIC_RELAXED);
+}
+
 void flex_intra_cluster_sync(){
     asm volatile("csrr x0, 0x7C2" ::: "memory");
 }
