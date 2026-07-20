@@ -181,7 +181,7 @@ void grid_sync_group_barrier_xy_polling(GridSyncGroupInfo * info){
 
 /// Encoding of an arbitrary group of clusters
 typedef struct {
-    uint32_t mask[FLEX_GROUP_CLUSTER_WORDS]
+    uint32_t mask[FLEX_GROUP_CLUSTER_WORDS];
 } flex_group_encoding;
 
 
@@ -248,12 +248,15 @@ flex_group_encoding flex_group_create_from_array(uint32_t clusters[], size_t len
     return group_encoding;
 }
 
-
-bool flex_group_contains_me(const flex_group_encoding * group_encoding) {
-    uint32_t cid = flex_get_cluster_id();
+bool flex_group_contains_cluster(const flex_group_encoding * group_encoding, uint32_t cid) {
     int word = cid / 32;
     int bit = cid % 32;
     return (group_encoding->mask[word] >> bit) & 0x1;
+}
+
+
+bool flex_group_contains_me(const flex_group_encoding * group_encoding) {
+    return flex_group_contains_cluster(group_encoding, flex_get_cluster_id());
 }
 
 
@@ -316,8 +319,9 @@ flex_group_barrier flex_group_barrier_init(const flex_group_encoding * group_enc
         .cluster_count = flex_group_get_cluster_cnt(group_encoding),
     };
     
-	if (flex_get_core_id() == 0 && flex_get_cluster_id() == 0) {
-        flex_reset_barrier(barrier.sync_register);
+    // Every member resets their registers
+	if (barrier.contains_me && flex_get_core_id() == 0) {
+        flex_reset_barrier(get_flex_group_register(flex_get_cluster_id()));
     }
     flex_global_barrier();
 
@@ -501,6 +505,95 @@ void flex_group_barrier_tree(const flex_group_tree_barrier * barrier) {
         uint32_t now = *my_release;
         for (uint32_t i = 0; i < barrier->num_children; i++)
             *(barrier->children[i]) = now;
+
+        flex_annotate_barrier(0);
+    }
+
+    flex_intra_cluster_sync();
+}
+
+
+/**********************************************
+*  Dissemination Barrier                      *
+**********************************************/
+
+#define DISSEMINATION_MAX_ROUNDS 10
+#define MAX_GROUP_SIZE (1U << DISSEMINATION_MAX_ROUNDS)
+
+#define DISSEMINATION_ROUND_MASK(round, parity) (1 << (round + DISSEMINATION_MAX_ROUNDS * parity))
+#define DISSEMINATION_RESET_MASK(parity) ~(0xFFFF << (DISSEMINATION_MAX_ROUNDS * parity))
+
+typedef struct {
+    uint8_t parity;
+    uint8_t n_rounds;
+    volatile uint32_t * local_reg;
+    volatile uint32_t * partner_reg[DISSEMINATION_MAX_ROUNDS];
+} dissemination_info_t;
+
+bool dissemination_get_flag(volatile uint32_t * reg, uint8_t round, uint8_t parity) {
+    return (*reg & DISSEMINATION_ROUND_MASK(round, parity)) != 0;
+}
+
+void dissemination_set_flag(volatile uint32_t * reg, uint8_t round, uint8_t parity) {
+    flex_amo_or(reg, DISSEMINATION_ROUND_MASK(round, parity));
+}
+
+void dissemination_reset_flags(volatile uint32_t * reg, uint8_t parity) {
+    flex_amo_and(reg, DISSEMINATION_RESET_MASK(parity));
+}
+
+dissemination_info_t dissemination_init(const flex_group_encoding * group_encoding) {
+    dissemination_info_t d_info = {
+        .parity = 0,
+        .n_rounds = 0,
+        .local_reg = get_flex_group_register(flex_get_cluster_id()),
+        .partner_reg = { NULL }
+    };
+    if (!flex_group_contains_me(group_encoding)) return d_info;
+
+    // Get a list of clusters in the group from the mask
+    uint32_t group_size = flex_group_get_cluster_cnt(group_encoding);
+    uint32_t group_members[group_size];
+    for (
+        uint32_t cid = flex_get_cluster_id(), n_members = 0;
+        n_members < group_size;
+        cid = (cid + 1) % ARCH_NUM_CLUSTER)
+    {
+        if (flex_group_contains_cluster(group_encoding, cid)) {
+            group_members[n_members++] = cid;
+        }
+    }
+
+    // Calculate number of rounds needed
+    uint8_t n_rounds = 0;
+    while(group_size > (1 << n_rounds)) n_rounds++;
+    d_info.n_rounds = n_rounds;
+
+    // Calculate partner for each round
+    for (uint8_t round = 0; round < n_rounds; round++) {
+        uint32_t partner = group_members[1 << round];   // As n_rounds <= log2(group_size), pow2(round) can not be out of bound
+        d_info.partner_reg[round] = get_flex_group_register(partner);
+    }
+
+    return d_info;
+}
+
+
+void flex_group_dissemination_barrier(
+    const flex_group_barrier * barrier,
+    dissemination_info_t * d_info
+) {
+    flex_intra_cluster_sync();
+
+    if (flex_is_dm_core() && barrier->contains_me) {
+        flex_annotate_barrier(0);
+
+        for (uint8_t round = 0; round < d_info->n_rounds; round++) {
+            dissemination_set_flag(d_info->partner_reg[round], round, d_info->parity);
+            while(dissemination_get_flag(d_info->local_reg, round, d_info->parity) != 0x1);
+        }
+        dissemination_reset_flags(d_info->local_reg, d_info->parity);
+        d_info->parity ^= 0x1;
 
         flex_annotate_barrier(0);
     }
