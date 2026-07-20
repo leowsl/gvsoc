@@ -1,16 +1,51 @@
 #include "flex_runtime.h"
 #include "flex_group_barrier.h"
 
+#include <stdlib.h>
+#include <stdbool.h>
+
 /// Test Timeout in nanoseconds
 #define TIMEOUT 10000000
 
 /// Evaluates to true on exactly one core of the system
 #define FIXED_CORE (flex_is_first_core() && (flex_get_cluster_id() == 0))
 
+/// Pseudo random number generator
+unsigned long prng_state = 0;
+
+/// RAND_MAX assumed to be 32767
+int rand(void)
+{
+    prng_state = prng_state * 1103515245 + 12345;
+    return (unsigned)(prng_state/65536) % 32768;
+}
+
+/// Create m random, disjoint groups with a specified number of clusters
+flex_group_encoding * create_groups(flex_group_encoding * groups, unsigned m, unsigned size) {
+    bool clusters[ARCH_NUM_CLUSTER] = { false };
+
+    if (groups == NULL) return NULL;
+    if (m * size > ARCH_NUM_CLUSTER) return NULL;
+
+    for (unsigned group = 0; group < m; group++) {
+        groups[group] = flex_group_create_zero_mask();
+        for (unsigned i = 0; i < size; i++) {
+            uint32_t cid;
+            do {
+                cid = (uint32_t) rand() % ARCH_NUM_CLUSTER;
+            } while(clusters[cid] == true);
+            clusters[cid] = true;
+            flex_group_set_cluster(&groups[group], cid);
+        }
+    }
+
+    return groups;
+}
+
 /// Helper to run a test function and measure the execution time
 #define run_test(fn, arg) \
     do { \
-        if (FIXED_CORE) printf("\n---------------------------------------------------------\n[Test Bench]: " #fn "(" #arg ")\n"); \
+        if (FIXED_CORE) printf("\n---------------------------------------------------------\n[Test Bench]: " #fn "\n"); \
         flex_global_barrier(); \
         if (FIXED_CORE) flex_timer_start(); \
         fn(arg); \
@@ -23,149 +58,111 @@
     } while(0) \
 
 
-/**
- * @brief Test the global barrier `flex_global_barrier()`.
- * @param iter  number of iterations
- * @returns exitcode, 0 if test passed
- */
-static int global_barrier(int iter) {
-    for (int i = 0; i < iter; ++i) flex_global_barrier();
+/// Test config
+struct test_config {
+    int iterations;
+    unsigned n_groups;
+    unsigned group_size;
+    flex_group_encoding *groups;
+};
+
+
+/// Helper to print the test config
+#define TEST_PREAMBLE(config) if (FIXED_CORE) printf("\n---------------------------------------------------------\n[Config]:\nIterations %d\nN Groups   %d\nGroup Size %d\n---------------------------------------------------------\n\n", config.iterations, config.n_groups, config.group_size);
+
+
+static int global_barrier(struct test_config config) {
+    for (int i = 0; i < config.iterations; ++i) flex_global_barrier();
     return 0;
 }
 
-/**
- * @brief Test the xy barrier `flex_global_barrier_xy()`.
- * @param iter  number of iterations
- * @returns exitcode, 0 if test passed
- */
-static int xy_barrier(int iter) {
-    for (int i = 0; i < iter; ++i) flex_global_barrier_xy();
+
+static int xy_barrier(struct test_config config) {
+    for (int i = 0; i < config.iterations; ++i) flex_global_barrier_xy();
     return 0;
 }
 
-/**
- * @brief Flat group barrier, remote spinning on the leader's counter.
- */
-static int group_barrier_polling(int iter) {
-    uint32_t group_config[] = {0, 2, 5, 9, 14, 15};
-    size_t group_config_size = sizeof(group_config) / sizeof(group_config[0]);
-    flex_group_encoding group_encoding = flex_group_create_from_array(group_config, group_config_size);
-    flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
 
-    // Restart the timer
-    if (FIXED_CORE) flex_timer_start();
-
-    for (int i = 0; i < iter; ++i) flex_group_barrier_polling(&group_barrier);
-    return 0;
-}
-
-/**
- * @brief Three disjoint groups, flat + remote spinning.
- */
-static int multi_group_barrier_polling(int iter) {
-    uint32_t group_config_1[] = {1, 3, 5, 7, 9, 11};
-    uint32_t group_config_2[] = {0, 2, 4, 6, 8, 10};
-    uint32_t group_config_3[] = {12, 13, 14, 15};
-    size_t group_config_size_1 = sizeof(group_config_1) / sizeof(group_config_1[0]);
-    size_t group_config_size_2 = sizeof(group_config_2) / sizeof(group_config_2[0]);
-    size_t group_config_size_3 = sizeof(group_config_3) / sizeof(group_config_3[0]);
-    flex_group_encoding group_encoding_1 = flex_group_create_from_array(group_config_1, group_config_size_1);
-    flex_group_encoding group_encoding_2 = flex_group_create_from_array(group_config_2, group_config_size_2);
-    flex_group_encoding group_encoding_3 = flex_group_create_from_array(group_config_3, group_config_size_3);
-
-    flex_group_barrier group_barrier_1 = flex_group_barrier_init(&group_encoding_1);
-    flex_group_barrier group_barrier_2 = flex_group_barrier_init(&group_encoding_2);
-    flex_group_barrier group_barrier_3 = flex_group_barrier_init(&group_encoding_3);
-
-    // Restart the timer
-    if (FIXED_CORE) flex_timer_start();
-
-    for (int i = 0; i < iter; ++i) {
-        flex_group_barrier_polling(&group_barrier_1);
-        flex_group_barrier_polling(&group_barrier_2);
-        flex_group_barrier_polling(&group_barrier_3);
+static int group_barrier_polling(struct test_config config) {
+    // Initialize barriers
+    flex_group_barrier barriers[config.n_groups];
+    for (unsigned i = 0; i < config.n_groups; i++) {
+        barriers[i] = flex_group_barrier_init(&config.groups[i]);
     }
-    return 0;
-}
-
-/**
- * @brief Flat group barrier, LOCAL spinning (last arriver notifies all K-1 members).
- */
-static int group_barrier_polling_new(int iter) {
-    uint32_t group_config[] = {0, 2, 5, 9, 14, 15};
-    size_t group_config_size = sizeof(group_config) / sizeof(group_config[0]);
-    flex_group_encoding group_encoding = flex_group_create_from_array(group_config, group_config_size);
-    flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
-
-    // Restart the timer
-    if (FIXED_CORE) flex_timer_start();
-
-    for (int i = 0; i < iter; ++i) flex_group_barrier_wait(&group_barrier);
-    return 0;
-}
-
-static int group_barrier_dissemination(int iter) {
-    uint32_t group_config[] = {0, 2, 5, 9, 14, 15};
-    size_t group_config_size = sizeof(group_config) / sizeof(group_config[0]);
-    flex_group_encoding group_encoding = flex_group_create_from_array(group_config, group_config_size);
-    flex_group_barrier group_barrier = flex_group_barrier_init(&group_encoding);
-    dissemination_info_t d_info = dissemination_init(&group_encoding);
 
     // Restart the timer
     flex_global_barrier();
     if (FIXED_CORE) flex_timer_start();
 
-    for (int i = 0; i < iter; ++i) flex_group_dissemination_barrier(&group_barrier, &d_info);
+    for (int i = 0; i < config.iterations; ++i) {
+        for (int n = 0; n < config.n_groups; ++n) {
+            flex_group_barrier_polling(&barriers[n]);
+        }
+    }
+
     return 0;
 }
 
-/**
- * @brief TREE group barrier: arrivals combine up, release propagates down.
- *        No cluster sees more than FANOUT messages, all spinning is local.
- * @param iter  number of iterations
- * @returns exitcode, 0 if test passed
- */
-static int group_barrier_tree(int iter) {
-    uint32_t group_config[] = {0, 2, 5, 9, 14, 15};
-    size_t group_config_size = sizeof(group_config) / sizeof(group_config[0]);
-    flex_group_encoding group_encoding = flex_group_create_from_array(group_config, group_config_size);
-    flex_group_tree_barrier group_barrier = flex_group_barrier_tree_init(&group_encoding);
+
+static int group_barrier_polling_new(struct test_config config) {
+    // Initialize barriers
+    flex_group_barrier barriers[config.n_groups];
+    for (unsigned i = 0; i < config.n_groups; i++) {
+        barriers[i] = flex_group_barrier_init(&config.groups[i]);
+    }
 
     // Restart the timer
+    flex_global_barrier();
     if (FIXED_CORE) flex_timer_start();
 
-    for (volatile int i = 0; i < iter; ++i) flex_group_barrier_tree(&group_barrier);
+    for (int i = 0; i < config.iterations; ++i) {
+        for (int n = 0; n < config.n_groups; ++n) {
+            flex_group_barrier_wait(&barriers[n]);
+        }
+    }
+
     return 0;
 }
 
-/**
- * @brief Three disjoint groups, each with its own tree.
- *        Groups are mutually exclusive, so every cluster hosts exactly one node.
- * @param iter  number of iterations
- * @returns exitcode, 0 if test passed
- */
-static int multi_group_barrier_tree(int iter) {
-    uint32_t group_config_1[] = {1, 3, 5, 7, 9, 11};
-    uint32_t group_config_2[] = {0, 2, 4, 6, 8, 10};
-    uint32_t group_config_3[] = {12, 13, 14, 15};
-    size_t group_config_size_1 = sizeof(group_config_1) / sizeof(group_config_1[0]);
-    size_t group_config_size_2 = sizeof(group_config_2) / sizeof(group_config_2[0]);
-    size_t group_config_size_3 = sizeof(group_config_3) / sizeof(group_config_3[0]);
-    flex_group_encoding group_encoding_1 = flex_group_create_from_array(group_config_1, group_config_size_1);
-    flex_group_encoding group_encoding_2 = flex_group_create_from_array(group_config_2, group_config_size_2);
-    flex_group_encoding group_encoding_3 = flex_group_create_from_array(group_config_3, group_config_size_3);
 
-    flex_group_tree_barrier group_barrier_1 = flex_group_barrier_tree_init(&group_encoding_1);
-    flex_group_tree_barrier group_barrier_2 = flex_group_barrier_tree_init(&group_encoding_2);
-    flex_group_tree_barrier group_barrier_3 = flex_group_barrier_tree_init(&group_encoding_3);
+static int group_barrier_dissemination(struct test_config config) {
+    // Initialize barriers
+    flex_group_barrier barriers[config.n_groups];
+    dissemination_info_t d_infos[config.n_groups];
+    for (unsigned i = 0; i < config.n_groups; i++) {
+        barriers[i] = flex_group_barrier_init(&config.groups[i]);
+        d_infos[i] = dissemination_init(&config.groups[i]);
+    }
 
     // Restart the timer
+    flex_global_barrier();
     if (FIXED_CORE) flex_timer_start();
 
-    for (volatile int i = 0; i < iter; ++i) {
-        flex_group_barrier_tree(&group_barrier_1);
-        flex_group_barrier_tree(&group_barrier_2);
-        flex_group_barrier_tree(&group_barrier_3);
+    for (int i = 0; i < config.iterations; ++i) {
+        for (int n = 0; n < config.n_groups; ++n) {
+            flex_group_dissemination_barrier(&barriers[n], &d_infos[n]);
+        }
+    }
+
+    return 0;
+}
+
+
+static int group_barrier_tree(struct test_config config) {
+    // Initialize barriers
+    flex_group_tree_barrier barriers[config.n_groups];
+    for (unsigned i = 0; i < config.n_groups; i++) {
+        barriers[i] = flex_group_barrier_tree_init(&config.groups[i]);
+    }
+
+    // Restart the timer
+    flex_global_barrier();
+    if (FIXED_CORE) flex_timer_start();
+
+    for (int i = 0; i < config.iterations; ++i) {
+        for (int n = 0; n < config.n_groups; ++n) {
+            flex_group_barrier_tree(&barriers[n]);
+        }
     }
     return 0;
 }
@@ -178,41 +175,23 @@ int main()
     flex_barrier_xy_init();
     flex_sat(TIMEOUT);
 
-    // // Global barrier tests
-    // run_test(global_barrier, 10);
-    // run_test(global_barrier, 100);
-    // run_test(global_barrier, 1000);
+    flex_group_encoding groups[2];
+    struct test_config config = {
+        .iterations = 1000,
+        .groups = groups,
+        .n_groups = 2,
+        .group_size = 5,
+    };
+    create_groups(config.groups, config.n_groups, config.group_size);
 
-    // // xy barrier tests
-    // run_test(xy_barrier, 10);
-    // run_test(xy_barrier, 100);
-    // run_test(xy_barrier, 1000);
+    TEST_PREAMBLE(config)
 
-    // // group barrier tests (flat, remote spin)
-    // run_test(group_barrier_polling, 10);
-    // run_test(group_barrier_polling, 100);
-    // run_test(group_barrier_polling, 1000);
-
-    // run_test(multi_group_barrier_polling, 10);
-    // run_test(multi_group_barrier_polling, 100);
-    // run_test(multi_group_barrier_polling, 1000);
-
-    // // group barrier tests (flat, local spin)
-    // run_test(group_barrier_polling_new, 10);
-    // run_test(group_barrier_polling_new, 100);
-    // run_test(group_barrier_polling_new, 1000);
-
-    run_test(group_barrier_tree, 10);
-    run_test(group_barrier_tree, 100);
-    run_test(group_barrier_tree, 1000);
-
-    run_test(multi_group_barrier_tree, 10);
-    run_test(multi_group_barrier_tree, 100);
-    run_test(multi_group_barrier_tree, 1000);
-
-    run_test(group_barrier_dissemination, 10);
-    run_test(group_barrier_dissemination, 100);
-    run_test(group_barrier_dissemination, 1000);
+    run_test(global_barrier, config);
+    run_test(xy_barrier, config);
+    run_test(group_barrier_polling, config);
+    run_test(group_barrier_polling_new, config);
+    run_test(group_barrier_dissemination, config);
+    run_test(group_barrier_tree, config);
 
     flex_eoc(eoc_val);
     return 0;
