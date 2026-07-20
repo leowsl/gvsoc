@@ -7,6 +7,16 @@
 /// Test Timeout in nanoseconds
 #define TIMEOUT 10000000
 
+#ifndef ITERATIONS
+#define ITERATIONS  1000
+#endif
+#ifndef N_GROUPS
+#define N_GROUPS    2
+#endif
+#ifndef GROUP_SIZE
+#define GROUP_SIZE  5
+#endif
+
 /// Evaluates to true on exactly one core of the system
 #define FIXED_CORE (flex_is_first_core() && (flex_get_cluster_id() == 0))
 
@@ -22,7 +32,11 @@ int rand(void)
 
 /// Create m random, disjoint groups with a specified number of clusters
 flex_group_encoding * create_groups(flex_group_encoding * groups, unsigned m, unsigned size) {
-    bool clusters[ARCH_NUM_CLUSTER] = { false };
+    // bool clusters[ARCH_NUM_CLUSTER] = { false };
+
+    bool clusters[ARCH_NUM_CLUSTER];
+    volatile bool *vc = clusters;
+    for (unsigned i = 0; i < ARCH_NUM_CLUSTER; i++) vc[i] = false;
 
     if (groups == NULL) return NULL;
     if (m * size > ARCH_NUM_CLUSTER) return NULL;
@@ -154,12 +168,12 @@ int main()
     flex_barrier_xy_init();
     flex_sat(TIMEOUT);
 
-    flex_group_encoding groups[2];
+    flex_group_encoding groups[N_GROUPS];
     struct test_config config = {
-        .iterations = 1000,
+        .iterations = ITERATIONS,
         .groups = groups,
-        .n_groups = 2,
-        .group_size = 5,
+        .n_groups = N_GROUPS,
+        .group_size = GROUP_SIZE,
     };
     create_groups(config.groups, config.n_groups, config.group_size);
 

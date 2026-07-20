@@ -170,7 +170,7 @@ void grid_sync_group_barrier_xy_polling(GridSyncGroupInfo * info){
 #define FLEX_GROUP_SYNC_COUNTER_REG   40      /// Offset for the counter register in the ARCH_SYNC region.
 #define FLEX_GROUP_SYNC_PARITY_BIT    31      /// Parity bit inside the counter that gets flipped when the counter wraps around
 #define FLEX_GROUP_SYNC_PARITY_MASK   (1 << FLEX_GROUP_SYNC_PARITY_BIT)
-#define FLEX_GROUP_SYNC_COUNTER_MASK ~FLEX_GROUP_SYNC_PARITY_MASK
+#define FLEX_GROUP_SYNC_COUNTER_MASK  ~FLEX_GROUP_SYNC_PARITY_MASK
 #define FLEX_GROUP_CLUSTER_WORDS      ((ARCH_NUM_CLUSTER + 31) / 32)    /// Number of words to represent all clusters as bits
 #define FLEX_GROUP_SLOTS_PER_CLUSTER  1     /// Number of counter slots per cluster (1 = single counter per cluster, can be 10 or more)
 #define FLEX_GROUP_NUM_GROUP_SLOTS    (ARCH_NUM_CLUSTER * FLEX_GROUP_SLOTS_PER_CLUSTER)     /// Total Number of available counter slots
@@ -204,9 +204,9 @@ typedef struct {
 
 
 void * get_flex_group_register(uint32_t cid) {    
-    // if (cid < 0 || cid >= ARCH_NUM_CLUSTER) {
-    //     return NULL;
-    // }
+    if (cid < 0 || cid >= ARCH_NUM_CLUSTER) {
+        return NULL;
+    }
     void * cluster_addr = ((void *) ARCH_SYNC_BASE) + (ARCH_SYNC_INTERLEAVE + ARCH_SYNC_SPECIAL_MEM) * cid;
     return cluster_addr + FLEX_GROUP_SYNC_COUNTER_REG;
 }
@@ -224,7 +224,9 @@ uint32_t flex_group_get_leader(const flex_group_encoding * group_encoding) {
 
 
 flex_group_encoding flex_group_create_zero_mask() {
-    flex_group_encoding group_encoding = { .mask = 0 };
+    flex_group_encoding group_encoding;
+    volatile uint32_t * p = (volatile uint32_t *)group_encoding.mask;
+    for (int i = 0; i < FLEX_GROUP_CLUSTER_WORDS; i++) p[i] = 0;
     return group_encoding;
 }
 
@@ -345,10 +347,10 @@ flex_group_barrier flex_group_barrier_init(const flex_group_encoding * group_enc
  */
 flex_group_tree_barrier flex_group_barrier_tree_init(const flex_group_encoding * group_encoding) {
     flex_group_tree_barrier barrier = {
-        .contains_me = flex_group_contains_me(group_encoding),
+        .contains_me  = flex_group_contains_me(group_encoding),
         .num_children = 0,
-        .parent_ctr = NULL,
-        .children = {NULL},
+        .parent_ctr   = NULL,
+        .children     = {NULL},
     };
 
     uint32_t curr_cid = flex_get_cluster_id();
@@ -361,22 +363,18 @@ flex_group_tree_barrier flex_group_barrier_tree_init(const flex_group_encoding *
             uint32_t child_rank = FLEX_GROUP_TREE_FANOUT * rank + i;
             if (child_rank < cluster_cnt) {
                 uint32_t child_cid = flex_group_get_cluster_by_rank(group_encoding, child_rank);
-                volatile uint32_t * child_node = (volatile uint32_t *) get_flex_group_register(child_cid);
-                barrier.children[barrier.num_children++] = &child_node[FLEX_GROUP_TREE_RELEASE_IDX];
+                barrier.children[barrier.num_children++] = (volatile uint32_t *) get_flex_group_register(child_cid);
             }
         }
 
         if (rank != 0) {
             uint32_t parent_rank = (rank - 1) / FLEX_GROUP_TREE_FANOUT;
             uint32_t parent_cid  = flex_group_get_cluster_by_rank(group_encoding, parent_rank);
-            volatile uint32_t * parent_node = (volatile uint32_t *) get_flex_group_register(parent_cid);
-            barrier.parent_ctr = &parent_node[FLEX_GROUP_TREE_COUNTER_IDX];
+            barrier.parent_ctr = (volatile uint32_t *) get_flex_group_register(parent_cid);
         }
 
         if (flex_get_core_id() == 0) {
-            volatile uint32_t * node = (volatile uint32_t *) get_flex_group_register(curr_cid);
-            node[FLEX_GROUP_TREE_COUNTER_IDX] = 0;
-            node[FLEX_GROUP_TREE_RELEASE_IDX] = 0;
+            *((volatile uint32_t *) get_flex_group_register(curr_cid)) = 0;
         }
     }
 
@@ -429,32 +427,28 @@ void flex_group_barrier_polling(const flex_group_barrier * barrier) {
  * @returns This function only returns after all clusters in the group reached that barrier.
  */
 void flex_group_barrier_tree(const flex_group_tree_barrier * barrier) {
-     flex_intra_cluster_sync();
+    flex_intra_cluster_sync();
 
     if (flex_is_dm_core() && barrier->contains_me) {
         flex_annotate_barrier(0);
 
-        volatile uint32_t * node = (volatile uint32_t *) get_flex_group_register(flex_get_cluster_id());
-        volatile uint32_t * my_counter = &node[FLEX_GROUP_TREE_COUNTER_IDX];
-        volatile uint32_t * my_release = &node[FLEX_GROUP_TREE_RELEASE_IDX];
-
-        uint32_t prev = *my_release;
+        volatile uint32_t * my_node = (volatile uint32_t *) get_flex_group_register(flex_get_cluster_id());
+        uint32_t parity = *my_node & FLEX_GROUP_SYNC_PARITY_MASK;
 
         if (barrier->num_children > 0) {
-            while (*my_counter != barrier->num_children);
-            *my_counter = 0;
+            while ((*my_node & FLEX_GROUP_SYNC_COUNTER_MASK) != barrier->num_children);
+            *my_node &= FLEX_GROUP_SYNC_PARITY_MASK;
         }
 
         if (barrier->parent_ctr) {
-            flex_amo_fetch_add(barrier->parent_ctr);
-            while (*my_release == prev);
+            flex_amo_fetch_add(barrier->parent_ctr); 
+            while ((*my_node & FLEX_GROUP_SYNC_PARITY_MASK) == parity);
         } else {
-            *my_release = prev ^ 0x1;
+            *my_node ^= FLEX_GROUP_SYNC_PARITY_MASK;   
         }
 
-        uint32_t now = *my_release;
         for (uint32_t i = 0; i < barrier->num_children; i++)
-            *(barrier->children[i]) = now;
+            *(barrier->children[i]) ^= FLEX_GROUP_SYNC_PARITY_MASK;
 
         flex_annotate_barrier(0);
     }
